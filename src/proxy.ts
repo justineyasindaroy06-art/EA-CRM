@@ -5,7 +5,9 @@ const COOKIE_NAME = "ea_crm_session";
 // /api/cron is intentionally public here — it has no session cookie to
 // check (the caller is an external scheduler, not a browser) and instead
 // protects itself with a CRON_SECRET bearer check inside the route handler.
-const PUBLIC_PATHS = ["/login", "/api/lead-intake", "/api/cron"];
+// /api/health is public so Railway's deploy health check (no cookie either)
+// can reach it; the route itself reveals nothing beyond ok/error.
+const PUBLIC_PATHS = ["/login", "/api/lead-intake", "/api/cron", "/api/health"];
 
 async function isAuthenticated(req: NextRequest) {
   const token = req.cookies.get(COOKIE_NAME)?.value;

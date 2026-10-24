@@ -1,0 +1,506 @@
+// EA CRM — Prisma schema (PostgreSQL variant, for Railway staging/production)
+//
+// This file is a deliberate mirror of ../schema.prisma (the SQLite variant
+// used for local development) with only the `datasource.provider` changed.
+// Prisma does not support a schema-level provider chosen by environment
+// variable — the provider is a compile-time literal used to select the
+// correct query engine binary at `prisma generate` time — so two schema
+// files are kept in sync rather than one schema silently meaning two
+// different databases. See RAILWAY_DEPLOYMENT.md for exactly when this
+// file is used vs. ../schema.prisma, and README.md "Local + Production
+// Database Support" for why this approach was chosen.
+//
+// IMPORTANT: if you change a model in ../schema.prisma, make the identical
+// change here (everything below the datasource block must stay identical).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// WORKSPACES — every client-specific record is scoped to a workspace so data
+// cannot accidentally mix between clients (spec section 5, 6, 28).
+// ---------------------------------------------------------------------------
+model Workspace {
+  id                 String   @id @default(cuid())
+  name               String
+  status             String   @default("active") // active | archived
+  description        String?
+  googleDriveRootUrl String?
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  contacts     Contact[]
+  leads        Lead[]
+  clients      Client[]
+  tasks        Task[]
+  meetings     Meeting[]
+  contentItems ContentItem[]
+  packages     Package[]
+  invoices     Invoice[]
+  payments     Payment[]
+  timeEntries  TimeEntry[]
+  files        FileAsset[]
+  activities   Activity[]
+  automationRuns AutomationRun[]
+}
+
+// ---------------------------------------------------------------------------
+// CONTACT — the person, intentionally separate from Lead/Client lifecycle
+// state (spec section 7).
+// ---------------------------------------------------------------------------
+model Contact {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  firstName String
+  lastName  String
+  email     String
+  phone     String?
+  company   String?
+  jobTitle  String?
+  notes     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leads    Lead[]
+  clients  Client[]
+  tasks    Task[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, email])
+}
+
+// ---------------------------------------------------------------------------
+// LEADS (spec section 8-11)
+// ---------------------------------------------------------------------------
+model Lead {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     Contact   @relation(fields: [contactId], references: [id])
+
+  status String @default("New Lead")
+  source String @default("Website Form")
+
+  interestedIn        String?
+  serviceOrProgram     String?
+  biggestChallenge     String?
+  desiredResult        String?
+  howHeard             String?
+  supportType          String?
+  preferredProgramType String?
+  preferredStartDate   String?
+  budgetRange          String?
+  workedWithCoachBefore Boolean?
+
+  consultationRequested Boolean @default(false)
+  consultationStatus    String  @default("Not Scheduled") // Not Scheduled | Booked | Completed | No Show | Cancelled
+  agreementStatus        String  @default("Not Sent") // Not Sent | Sent | Signed
+  paymentStatus           String  @default("Unpaid") // Unpaid | Pending | Paid
+
+  eaConfirmedConversion Boolean @default(false)
+
+  nextAction    String?
+  nextActionDue DateTime?
+  notes         String?
+
+  lastContactedAt DateTime?
+  nextFollowUpAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  convertedToClientId String?  @unique
+  convertedToClient   Client?  @relation("LeadConversion", fields: [convertedToClientId], references: [id])
+
+  tasks    Task[]
+  meetings Meeting[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+// ---------------------------------------------------------------------------
+// CLIENTS (spec section 11-13)
+// ---------------------------------------------------------------------------
+model Client {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     Contact   @relation(fields: [contactId], references: [id])
+
+  status         String   @default("active") // active | paused | archived
+  clientType     String?
+  startDate      DateTime?
+  nextAction     String?
+  nextActionDue  DateTime?
+  notes          String?
+  driveRootUrl   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  originLead Lead? @relation("LeadConversion")
+
+  tasks         Task[]
+  meetings      Meeting[]
+  contentItems  ContentItem[]
+  clientPackages ClientPackage[]
+  invoices      Invoice[]
+  payments      Payment[]
+  timeEntries   TimeEntry[]
+  files         FileAsset[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+// ---------------------------------------------------------------------------
+// TASKS (spec section 15-16)
+// ---------------------------------------------------------------------------
+model Task {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  taskName String
+  category String @default("Admin") // Lead | Client | Meeting | Content | Billing | Admin
+  priority String @default("Medium") // Low | Medium | High | Urgent
+  status   String @default("To Do") // To Do | In Progress | Waiting | Done
+
+  dueDate      DateTime?
+  waitingOn    String?
+  followUpDate DateTime?
+
+  nextAction String?
+  notes      String?
+
+  relatedContactId String?
+  relatedLeadId     String?
+  lead              Lead?    @relation(fields: [relatedLeadId], references: [id])
+  contact           Contact? @relation(fields: [relatedContactId], references: [id])
+  relatedClientId   String?
+  client            Client?  @relation(fields: [relatedClientId], references: [id])
+  relatedMeetingId  String?
+  meeting           Meeting? @relation(fields: [relatedMeetingId], references: [id])
+  relatedContentId  String?
+  contentItem       ContentItem? @relation(fields: [relatedContentId], references: [id])
+  relatedInvoiceId  String?
+  invoice           Invoice? @relation(fields: [relatedInvoiceId], references: [id])
+
+  automationKey String? // idempotency key so automations don't create duplicate tasks
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@index([workspaceId, dueDate])
+  @@index([automationKey])
+}
+
+// ---------------------------------------------------------------------------
+// MEETINGS (spec section 17)
+// ---------------------------------------------------------------------------
+model Meeting {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  leadId   String?
+  lead     Lead?   @relation(fields: [leadId], references: [id])
+  clientId String?
+  client   Client? @relation(fields: [clientId], references: [id])
+
+  title                     String
+  meetingType               String  @default("Consultation") // Consultation | Session | Internal | Other
+  externalCalendarEventId String?
+  googleMeetUrl             String?
+
+  startAt DateTime
+  endAt   DateTime
+
+  status        String @default("Scheduled") // Scheduled | Completed | Cancelled
+  notes         String?
+  nextAction    String?
+  nextActionDue DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks Task[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, startAt])
+}
+
+// ---------------------------------------------------------------------------
+// CONTENT (spec section 19)
+// ---------------------------------------------------------------------------
+model ContentItem {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id])
+
+  title       String
+  contentType String @default("Social Post") // Presentation | Poster | Ad | Video | Social Post | Other
+  platform    String?
+
+  status      String    @default("Idea") // Idea|Draft|Design|Review|Approved|Scheduled|Published
+  dueDate     DateTime?
+  publishDate DateTime?
+
+  nextAction    String?
+  nextActionDue DateTime?
+
+  canvaUrl       String?
+  capcutUrl      String?
+  googleDriveUrl String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks Task[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+// ---------------------------------------------------------------------------
+// PACKAGES / BILLING (spec section 20-21)
+// ---------------------------------------------------------------------------
+model Package {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  price       Float   @default(0)
+  duration    String?
+  packageType String?
+  active      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clientPackages ClientPackage[]
+  invoices       Invoice[]
+
+  @@index([workspaceId])
+}
+
+model ClientPackage {
+  id        String   @id @default(cuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  packageId String
+  package   Package  @relation(fields: [packageId], references: [id])
+  startDate DateTime?
+  status    String   @default("active") // active | completed | cancelled
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+}
+
+model Invoice {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id])
+  packageId   String?
+  package     Package?  @relation(fields: [packageId], references: [id])
+
+  invoiceNumber String   @unique
+  invoiceDate   DateTime @default(now())
+  dueDate       DateTime
+  amount        Float
+  status        String   @default("Draft") // Draft|Sent|Paid|Partially Paid|Overdue|Cancelled
+  invoiceUrl    String?
+  notes         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+  tasks    Task[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invoiceId   String?
+  invoice     Invoice?  @relation(fields: [invoiceId], references: [id])
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id])
+
+  amount          Float
+  paymentDate     DateTime @default(now())
+  paymentMethod   String?
+  referenceNumber String?
+  notes           String?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// TIME TRACKING (spec section 22)
+// ---------------------------------------------------------------------------
+model TimeEntry {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id])
+
+  project  String?
+  taskId   String?
+
+  startAt  DateTime
+  endAt    DateTime?
+  duration Int? // seconds; computed on stop/save
+
+  billable Boolean @default(true)
+  notes    String?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([workspaceId, clientId])
+}
+
+// ---------------------------------------------------------------------------
+// FILES (metadata/links only — Google Drive is the source of truth, section 18)
+// ---------------------------------------------------------------------------
+model FileAsset {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id])
+
+  name       String
+  type       String?
+  driveUrl   String
+  folderName String?
+  notes      String?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------------------
+// ACTIVITY TIMELINE (spec section 23, 38) — read-only from normal UI
+// ---------------------------------------------------------------------------
+model Activity {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  recordType String // lead | client | contact | task | meeting | content | invoice | payment
+  recordId   String
+  eventType  String
+  summary    String
+  metadata   String? // JSON string
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([recordType, recordId])
+}
+
+// ---------------------------------------------------------------------------
+// AUTOMATION LOG (spec section 31)
+// ---------------------------------------------------------------------------
+model AutomationRun {
+  id            String   @id @default(cuid())
+  // Nullable: most automation runs are scoped to one workspace (e.g. a
+  // single lead's follow-up email), but a scheduler-level summary run
+  // (spanning every workspace) has no single workspace to attach to.
+  workspaceId   String?
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  automationName String
+  relatedRecordType String?
+  relatedRecordId   String?
+  status         String  @default("success") // success | error | skipped
+  error          String?
+  // Structured JSON details (e.g. scheduler run counts) — never secrets/tokens.
+  metadata       String?
+  attemptCount   Int     @default(1)
+  testMode       Boolean @default(false)
+
+  runAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([automationName])
+}
+
+// ---------------------------------------------------------------------------
+// INTEGRATION CREDENTIALS — server-side-only OAuth token storage for the
+// single EA user's Google account (Calendar, Drive, Gmail all share one
+// consent since there is exactly one application user in V1). Never sent to
+// the browser; only read by the service-layer integration modules.
+// ---------------------------------------------------------------------------
+model IntegrationCredential {
+  id           String    @id @default(cuid())
+  provider     String    @unique // "google"
+  accessToken  String
+  refreshToken String?
+  expiryDate   DateTime?
+  scope        String?
+  // Last error message from a real API call (e.g. token refresh failure or
+  // a rejected Gmail send) — surfaced in Settings as integration status.
+  lastError    String?
+  lastCheckedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// EMAIL TEMPLATES / AUTOMATION SETTINGS (spec section 30, 41)
+// ---------------------------------------------------------------------------
+model EmailTemplate {
+  id      String  @id @default(cuid())
+  key     String  @unique // e.g. lead_welcome, booking_reminder, follow_up...
+  name    String
+  subject String
+  body    String
+  enabled Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String // JSON string
+  updatedAt DateTime @updatedAt
+}
